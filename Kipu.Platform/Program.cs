@@ -165,18 +165,27 @@ if (knownProxies.Length > 0)
 // KnownProxies only works for a proxy with a fixed, known address (e.g. a
 // self-hosted nginx). A PaaS edge like Railway's terminates every connection
 // from a rotating address it never publishes, so KnownProxies can never be
-// populated for it and UseForwardedHeaders() above never activates — every
-// caller then shares the edge's own address, collapsing both rate limiters
-// into one global bucket (see the partition key below).
+// populated for it and UseForwardedHeaders() above never activates.
 //
 // This is a narrower, explicit opt-in for exactly that case: trust the
 // right-most X-Forwarded-For entry unconditionally, with no IP allowlist.
 // It is only safe because of Railway's specific topology — the container
 // port is never reachable except through Railway's own edge, so nothing
 // can inject that right-most hop except Railway itself. It must stay off
-// (the default) for any deployment where the app's port might be reached
-// directly, since a direct caller could then set X-Forwarded-For itself and
-// get a fresh bucket on every request — worse than not forwarding at all.
+// for any deployment where the app's port might be reached directly, since
+// a direct caller could then set X-Forwarded-For itself and get a fresh
+// bucket on every request — worse than not forwarding at all.
+//
+// This used to be assumed safe to leave off, on the theory that every
+// caller would then collapse onto one shared bucket keyed on the edge's own
+// RemoteIpAddress — a coarser limit, but still a limit. A live probe against
+// production (2026-09-06) disproved that: 25+ rapid sign-in attempts with
+// this off got zero 429s, meaning Railway doesn't present one fixed address
+// per connection here — RemoteIpAddress varies enough that the partition
+// key rarely repeats, and the "auth" policy's 10/min budget never actually
+// filled. appsettings.Production.json now sets this to true; the false
+// default below only still matters for local Kestrel, which has no proxy
+// of its own in front of it.
 var trustLastProxyHop = builder.Configuration.GetValue("ForwardedHeaders:TrustLastProxyHop", false);
 
 // Shared by both limiters below so a caller's global and auth-specific
